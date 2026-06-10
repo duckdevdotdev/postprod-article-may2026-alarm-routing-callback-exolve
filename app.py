@@ -260,17 +260,24 @@ def trigger_manual_callback(call_id: str):
 
         call = dict(row)
 
-        # Серверная защита от повторного запуска Callback.
-        # Кнопка в UI скрыта для других статусов, но POST-запрос можно отправить вручную.
-        if call["status"] not in ["queued", "failed"]:
-            logger.warning(
-                f"Попытка повторного Callback для заявки {call_id} со статусом {call['status']}"
-            )
-            return redirect(url_for("view_queue"))
+        with conn:
+            reserved = conn.execute(
+                """
+                UPDATE calls
+                SET status = 'callback_pending',
+                    updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+                WHERE call_id = ?
+                  AND status IN ('queued', 'failed')
+                  AND COALESCE(department_phone, '') <> ''
+                """,
+                (call_id,),
+            ).rowcount
 
-        if not call.get("department_phone"):
-            logger.error(f"Для заявки {call_id} не указан телефон отдела.")
-            update_call_status(call_id, "failed")
+        if reserved != 1:
+            logger.warning(
+                f"Callback для заявки {call_id} не запущен: заявка уже обрабатывается, "
+                "закрыта, не найдена или в ней не указан телефон отдела."
+            )
             return redirect(url_for("view_queue"))
 
         success = initiate_callback(call["tenant_phone"], call["department_phone"])
